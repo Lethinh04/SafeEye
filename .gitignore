@@ -1,0 +1,17 @@
+# Bỏ qua các thư mục chứa thư viện và cache
+node_modules/
+vendor/
+dist/
+build/
+
+# Bỏ qua các file môi trường (chứa mật khẩu/API key)
+.env
+.env.local
+
+# Bỏ qua các file hệ điều hành
+.DS_Store
+Thumbs.db
+
+# Bỏ qua cấu hình riêng của các IDE/Editor
+.vscode/
+.idea/

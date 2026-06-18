@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Test Web</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background-color: #1a1a1a; color: white; margin: 0; padding: 20px; }
+        .container { position: relative; display: inline-block; }
+        video, canvas { border-radius: 8px; border: 2px solid #333; }
+        canvas { position: absolute; top: 0; left: 0; }
+        #stats { margin-top: 10px; font-size: 18px; color: #00ffcc; }
+        #log { margin-top: 10px; color: #ffcc00; max-height: 100px; overflow-y: auto; text-align: left; background: #222; padding: 10px; display: inline-block; width: 640px; border-radius: 8px; }
+        .fps-laggy { color: red !important; }
+    </style>
+</head>
+<body>
+
+    <h2>Simple Test Model</h2>
+    <p>Web này chỉ gửi hình ảnh lên API và hiển thị kết quả, tối ưu nhất có thể.</p>
+    
+    <div class="container">
+        <!-- mirror video using transform -->
+        <video id="video" width="640" height="360" autoplay playsinline style="transform: scaleX(-1);"></video>
+        <canvas id="canvas" width="640" height="360" style="transform: scaleX(-1);"></canvas>
+    </div>
+
+    <div id="stats">FPS API: 0 | API Ping: 0 ms</div>
+    <div id="log">Đang chờ khởi động...</div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statsEl = document.getElementById('stats');
+        const logEl = document.getElementById('log');
+
+        const API_URL = 'http://localhost:5050/detect';
+        let isProcessing = false;
+        let lastCallTime = 0;
+
+        function logMsg(msg) {
+            logEl.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + logEl.innerHTML;
+        }
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 360, frameRate: { ideal: 30 } }
+                });
+                video.srcObject = stream;
+                logMsg('Camera đã bật, chuẩn bị gửi tới API...');
+                
+                // Bắt đầu vòng lặp sau khi video chạy
+                video.onloadedmetadata = () => {
+                    requestAnimationFrame(processFrame);
+                };
+            } catch (err) {
+                logMsg('Lỗi bật camera: ' + err);
+            }
+        }
+
+        async function processFrame() {
+            if (isProcessing) {
+                requestAnimationFrame(processFrame);
+                return;
+            }
+
+            isProcessing = true;
+
+            // Draw current video frame to canvas để lấy ảnh
+            // Mình dùng một canvas ẩn để lấy base64, canvas hiện để vẽ bounding box
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Lật ảnh để gửi lên giống web kia
+            tempCtx.translate(tempCanvas.width, 0);
+            tempCtx.scale(-1, 1);
+            tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            
+            const base64Image = tempCanvas.toDataURL('image/jpeg', 0.7); // nén bớt để giảm lag mạng
+
+            try {
+                const startPing = Date.now();
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: base64Image, conf: 0.5 })
+                });
+
+                if (!response.ok) throw new Error('API lỗi status: ' + response.status);
+
+                const data = await response.json();
+                const ping = Date.now() - startPing;
+
+                // Cập nhật stats
+                statsEl.innerText = `FPS API: ${data.fps} | API Ping: ${ping} ms`;
+                if (ping > 500) {
+                    statsEl.className = 'fps-laggy';
+                } else {
+                    statsEl.className = '';
+                }
+
+                // Xóa canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Vẽ bounding boxes (lưu ý ảnh trên API đã lật, nên bounding box gửi về tương ứng ảnh lật)
+                // Do canvas hiển thị trên màn hình cũng lật (scaleX(-1)), nên ta cứ vẽ bth.
+                data.detections.forEach(det => {
+                    const bbox = det.bbox;
+                    const x = bbox.x1n * canvas.width;
+                    const y = bbox.y1n * canvas.height;
+                    const w = (bbox.x2n - bbox.x1n) * canvas.width;
+                    const h = (bbox.y2n - bbox.y1n) * canvas.height;
+
+                    ctx.strokeStyle = det.color || '#ff0000';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, y, w, h);
+
+                    ctx.fillStyle = det.color || '#ff0000';
+                    ctx.font = '16px Arial';
+                    ctx.fillText(`${det.label} (${Math.round(det.confidence * 100)}%)`, x, y - 5);
+                });
+
+                if (data.detections.length > 0) {
+                    logMsg(`Phát hiện: ${data.detections.map(d => d.label).join(', ')}`);
+                }
+
+            } catch (err) {
+                logMsg('Lỗi gọi API: ' + err.message);
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // Xóa nếu lỗi
+            } finally {
+                isProcessing = false;
+                // Gọi frame tiếp theo
+                requestAnimationFrame(processFrame);
+            }
+        }
+
+        startCamera();
+    </script>
+</body>
+</html>
