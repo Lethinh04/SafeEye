@@ -45,6 +45,25 @@ except Exception as e:
     print("[SafeEye] Lỗi tải model tiền YOLO:", e)
     money_model_yolo = None
 
+try:
+    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.pt")
+    print("[SafeEye] Tải model vật cản (best.pt) thành công")
+except Exception as e:
+    print("[SafeEye] Lỗi tải model vật cản (best.pt):", e)
+    best_model_yolo = None
+
+BEST_LABELS_VI = {
+    0: "nắp cống đóng",
+    1: "nắp cống mở",
+    2: "bậc vỉa hè"
+}
+
+BEST_COLORS = {
+    0: "#ef4444", # Đỏ
+    1: "#ef4444", # Đỏ
+    2: "#ef4444", # Đỏ
+}
+
 # Các class cần nhận diện (theo demo.py gốc)
 TARGET_CLASSES = [
     0,   # person
@@ -263,8 +282,8 @@ def detect():
         # Nhận diện tiền VN bằng YOLO
         if money_model_yolo is not None:
             try:
-                # Chạy YOLO cho tiền (conf 0.4 để nhạy hơn)
-                m_results = money_model_yolo(frame, conf=0.4, verbose=False)
+                # Chạy YOLO cho tiền (conf 0.6 để nhạy hơn)
+                m_results = money_model_yolo(frame, conf=0.6, verbose=False)
                 for r in m_results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -305,6 +324,38 @@ def detect():
                         class_counts[label_vi_money] = class_counts.get(label_vi_money, 0) + 1
             except Exception as e:
                 print("[SafeEye] Lỗi nhận diện tiền YOLO:", e)
+
+        # Nhận diện vật cản bằng YOLO
+        if best_model_yolo is not None:
+            try:
+                b_results = best_model_yolo(frame, conf=0.4, verbose=False)
+                for r in b_results:
+                    for box in r.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        cls = int(box.cls[0])
+                        b_conf = float(box.conf[0])
+                        
+                        label_vi_best = BEST_LABELS_VI.get(cls, f"Vật cản {cls}")
+                        b_color = BEST_COLORS.get(cls, "#ef4444")
+                        
+                        detections.append({
+                            "class_id": 2000 + cls,
+                            "label": label_vi_best,
+                            "label_en": f"Obstacle {cls}",
+                            "confidence": round(b_conf, 3),
+                            "color": b_color,
+                            "bbox": {
+                                "x1": x1, "y1": y1,
+                                "x2": x2, "y2": y2,
+                                "x1n": round(x1 / w, 4),
+                                "y1n": round(y1 / h, 4),
+                                "x2n": round(x2 / w, 4),
+                                "y2n": round(y2 / h, 4),
+                            }
+                        })
+                        class_counts[label_vi_best] = class_counts.get(label_vi_best, 0) + 1
+            except Exception as e:
+                print("[SafeEye] Lỗi nhận diện vật cản YOLO:", e)
 
         fps = calculate_fps()
 

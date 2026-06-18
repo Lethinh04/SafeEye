@@ -118,7 +118,7 @@ while True:
     frame_small = cv2.resize(frame, (640, 480))
 
     # Nhận diện vật thể thường
-    results = model_yolo(frame_small, classes=target_classes, conf=0.3, verbose=False)
+    results = model_yolo(frame_small, classes=target_classes, conf=0.5, verbose=False)
 
     detected_classes_vi = set()
 
@@ -136,7 +136,7 @@ while True:
 
     # Nhận diện tiền
     if money_model_yolo is not None:
-        m_results = money_model_yolo(frame_small, conf=0.4, verbose=False)
+        m_results = money_model_yolo(frame_small, conf=0.6, verbose=False)
         for r in m_results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
