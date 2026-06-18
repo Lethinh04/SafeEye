@@ -251,9 +251,20 @@ def detect():
         detections = []
         class_counts = {}
 
+        MIN_AREA_GENERAL = 4000
+        MIN_AREA_MONEY = 1000
+        MIN_AREA_OBSTACLE = 3000
+
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+                
+                box_w = x2 - x1
+                box_h = y2 - y1
+                box_area = box_w * box_h
+                if box_area < MIN_AREA_GENERAL:
+                    continue
+
                 cls = int(box.cls[0])
                 conf = float(box.conf[0])
 
@@ -262,7 +273,8 @@ def detect():
 
                 detections.append({
                     "class_id": cls,
-                    "label": label_vi,
+                    "label": f"{label_vi} ({box_w}x{box_h})",
+                    "label_tts": label_vi,
                     "label_en": names[cls],
                     "confidence": round(conf, 3),
                     "color": color,
@@ -287,6 +299,13 @@ def detect():
                 for r in m_results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        box_w = x2 - x1
+                        box_h = y2 - y1
+                        box_area = box_w * box_h
+                        if box_area < MIN_AREA_MONEY:
+                            continue
+
                         cls = int(box.cls[0])
                         m_conf = float(box.conf[0])
                         
@@ -308,7 +327,8 @@ def detect():
                         
                         detections.append({
                             "class_id": 999 + cls,
-                            "label": label_vi_money,
+                            "label": f"{label_vi_money} ({box_w}x{box_h})",
+                            "label_tts": label_vi_money,
                             "label_en": f"Money {m_label}",
                             "confidence": round(m_conf, 3),
                             "color": m_color,
@@ -332,6 +352,13 @@ def detect():
                 for r in b_results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        box_w = x2 - x1
+                        box_h = y2 - y1
+                        box_area = box_w * box_h
+                        if box_area < MIN_AREA_OBSTACLE:
+                            continue
+
                         cls = int(box.cls[0])
                         b_conf = float(box.conf[0])
                         
@@ -340,7 +367,8 @@ def detect():
                         
                         detections.append({
                             "class_id": 2000 + cls,
-                            "label": label_vi_best,
+                            "label": f"{label_vi_best} ({box_w}x{box_h})",
+                            "label_tts": label_vi_best,
                             "label_en": f"Obstacle {cls}",
                             "confidence": round(b_conf, 3),
                             "color": b_color,
@@ -360,7 +388,7 @@ def detect():
         fps = calculate_fps()
 
         # Tạo câu nói
-        detected_classes_vi = [CLASS_LABELS_VI.get(d["class_id"], d["label"]) for d in detections]
+        detected_classes_vi = [d.get("label_tts", CLASS_LABELS_VI.get(d["class_id"], d["label"])) for d in detections]
         unique_classes = list(set(detected_classes_vi))
         unique_classes.sort()
 

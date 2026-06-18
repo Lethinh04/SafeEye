@@ -117,6 +117,10 @@ while True:
 
     frame_small = cv2.resize(frame, (640, 480))
 
+    MIN_AREA_GENERAL = 4000
+    MIN_AREA_MONEY = 1000
+    MIN_AREA_OBSTACLE = 3000
+
     # Nhận diện vật thể thường
     results = model_yolo(frame_small, classes=target_classes, conf=0.5, verbose=False)
 
@@ -125,6 +129,14 @@ while True:
     for r in results:
         for box in r.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
+            
+            # Lọc theo diện tích
+            box_w = x2 - x1
+            box_h = y2 - y1
+            box_area = box_w * box_h
+            if box_area < MIN_AREA_GENERAL:
+                continue
+
             cls = int(box.cls[0])
             
             label_vi = CLASS_LABELS_VI.get(cls, names[cls])
@@ -132,7 +144,7 @@ while True:
             
             # Vẽ bounding box
             cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame_small, label_vi, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(frame_small, f"{label_vi} ({box_w}x{box_h})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
     # Nhận diện tiền
     if money_model_yolo is not None:
@@ -140,6 +152,14 @@ while True:
         for r in m_results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+                
+                # Lọc theo diện tích
+                box_w = x2 - x1
+                box_h = y2 - y1
+                box_area = box_w * box_h
+                if box_area < MIN_AREA_MONEY:
+                    continue
+
                 cls = int(box.cls[0])
                 m_label = money_names_yolo[cls]
                 label_vi_money = f"Tiền {m_label} VNĐ"
@@ -147,7 +167,7 @@ while True:
                 
                 # Vẽ bounding box
                 cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                cv2.putText(frame_small, label_vi_money, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(frame_small, f"{label_vi_money} ({box_w}x{box_h})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
     # Nhận diện vật cản (nắp cống, bậc vỉa hè)
     if best_model_yolo is not None:
@@ -155,6 +175,14 @@ while True:
         for r in b_results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
+                
+                # Lọc theo diện tích
+                box_w = x2 - x1
+                box_h = y2 - y1
+                box_area = box_w * box_h
+                if box_area < MIN_AREA_OBSTACLE:
+                    continue
+
                 cls = int(box.cls[0])
                 
                 label_vi_best = BEST_LABELS_VI.get(cls, f"Vật cản {cls}")
@@ -162,7 +190,7 @@ while True:
                 
                 # Vẽ bounding box (màu đỏ)
                 cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(frame_small, label_vi_best, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                cv2.putText(frame_small, f"{label_vi_best} ({box_w}x{box_h})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
     current_time = time.time()
     if current_time - last_speak_time > interval:
