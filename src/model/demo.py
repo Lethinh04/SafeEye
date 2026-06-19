@@ -15,6 +15,8 @@ while True:
     if not ret:
         break
 
+    frame = cv2.resize(frame, (1080, 720), interpolation=cv2.INTER_AREA)
+
     results = model(frame, classes=target_classes, conf=0.3)
 
     for r in results:

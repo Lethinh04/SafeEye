@@ -2,17 +2,16 @@ import cv2
 import time
 import torch
 import numpy as np
-import sounddevice as sd
 from ultralytics import YOLO
-from transformers import VitsModel, AutoTokenizer
 import threading
+import concurrent.futures
 
 # 1. Load models
-model_yolo = YOLO("yolov8n.pt")
+model_yolo = YOLO("yolov8n.onnx", task="detect")
 names = model_yolo.names
 
 try:
-    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL/SafeEye/src/model/money_yolov8.pt")
+    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL/SafeEye/src/model/money_yolov8.onnx", task="detect")
     money_names_yolo = money_model_yolo.names
     print("[SafeEye] Tải model tiền YOLO thành công, classes:", money_names_yolo)
 except Exception as e:
@@ -20,8 +19,8 @@ except Exception as e:
     money_model_yolo = None
 
 try:
-    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.pt")
-    print("[SafeEye] Tải model vật cản (best.pt) thành công")
+    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.onnx", task="detect")
+    print("[SafeEye] Tải model vật cản (ONNX) thành công")
 except Exception as e:
     print("[SafeEye] Lỗi tải model vật cản (best.pt):", e)
     best_model_yolo = None
@@ -90,19 +89,7 @@ CLASS_LABELS_VI = {
     67: "Điện thoại",
 }
 
-tts_model = VitsModel.from_pretrained("facebook/mms-tts-vie")
-tokenizer = AutoTokenizer.from_pretrained("facebook/mms-tts-vie")
-
-def speak(text):
-    def run():
-        inputs = tokenizer(text, return_tensors="pt")
-        with torch.no_grad():
-            output = tts_model(**inputs).waveform
-        audio = output.squeeze().cpu().numpy()
-        sd.stop()
-        sd.play(audio, samplerate=tts_model.config.sampling_rate)
-
-    threading.Thread(target=run, daemon=True).start()
+# Đã loại bỏ model TTS để tối ưu FPS. Giọng nói sẽ được phát thông qua Web Browser hoặc Raspberry Pi.
 
 # cap = cv2.VideoCapture(0)
 cap = cv2.VideoCapture("http://192.168.1.235:5000/video")
@@ -110,45 +97,89 @@ cap = cv2.VideoCapture("http://192.168.1.235:5000/video")
 last_speak_time = 0
 interval = 5
 
+# === CHẾ ĐỘ DEBUG: Đặt True để hiển thị cả vật bị lọc (khung xám) ===
+DEBUG_MODE = True
+
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    frame_small = cv2.resize(frame, (640, 480))
+    frame_small = cv2.resize(frame, (1080, 720), interpolation=cv2.INTER_AREA)
 
-    MIN_AREA_GENERAL = 4000
+    # Ngưỡng diện tích riêng cho từng vật thể (pixel²)
+    MIN_AREA_PER_CLASS = {
+        0:  3000,   # person        - người (thân hình dài, dễ nhận)
+        1:  2500,   # bicycle       - xe đạp
+        2:  5000,   # car           - ô tô (to, chỉ báo khi gần)
+        3:  3000,   # motorcycle    - xe máy
+        4:  4000,   # airplane      - máy bay
+        5:  6000,   # bus           - xe buýt (rất to, chỉ báo khi gần)
+        6:  6000,   # train         - tàu hỏa
+        7:  5000,   # truck         - xe tải
+        8:  3000,   # boat          - thuyền
+        9:  800,    # traffic light - đèn giao thông (nhỏ trên cao)
+        10: 1500,   # fire hydrant  - họng cứu hỏa (nhỏ dưới đất)
+        11: 1000,   # stop sign     - biển dừng (nhỏ trên cao)
+        12: 1000,   # parking meter - đồng hồ đỗ xe
+        13: 3000,   # bench         - ghế băng
+        15: 1500,   # cat           - mèo (nhỏ)
+        16: 2000,   # dog           - chó
+        19: 4000,   # cow           - bò
+        24: 1500,   # backpack      - ba lô
+        25: 1500,   # umbrella      - ô dù
+        26: 1000,   # handbag       - túi xách (nhỏ)
+        28: 2000,   # suitcase      - vali
+        39: 800,    # bottle        - chai (nhỏ)
+        41: 600,    # cup           - ly/cốc (rất nhỏ)
+        56: 3000,   # chair         - ghế
+        60: 4000,   # dining table  - bàn ăn (to)
+        67: 500,    # cell phone    - điện thoại (rất nhỏ)
+    }
     MIN_AREA_MONEY = 1000
     MIN_AREA_OBSTACLE = 3000
 
-    # Nhận diện vật thể thường
-    results = model_yolo(frame_small, classes=target_classes, conf=0.5, verbose=False)
+    # Nhận diện ĐA LUỒNG (Song song) 3 model cùng lúc
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        future_general = executor.submit(model_yolo, frame_small, classes=target_classes, conf=0.5, verbose=False, imgsz=320)
+        future_money = executor.submit(money_model_yolo, frame_small, conf=0.6, verbose=False, imgsz=320) if money_model_yolo else None
+        future_best = executor.submit(best_model_yolo, frame_small, conf=0.4, verbose=False, imgsz=320) if best_model_yolo else None
+        
+        results = future_general.result()
+        m_results = future_money.result() if future_money else []
+        b_results = future_best.result() if future_best else []
 
     detected_classes_vi = set()
+
+    # Xử lý kết quả model chung
 
     for r in results:
         for box in r.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             
-            # Lọc theo diện tích
+            # Lọc theo diện tích riêng từng class
+            cls = int(box.cls[0])
             box_w = x2 - x1
             box_h = y2 - y1
             box_area = box_w * box_h
-            if box_area < MIN_AREA_GENERAL:
-                continue
-
-            cls = int(box.cls[0])
-            
+            min_area = MIN_AREA_PER_CLASS.get(cls, 4000)
             label_vi = CLASS_LABELS_VI.get(cls, names[cls])
+
+            if box_area < min_area:
+                # DEBUG: Vẽ khung xám nét đứt cho vật bị lọc
+                if DEBUG_MODE:
+                    cv2.rectangle(frame_small, (x1, y1), (x2, y2), (128, 128, 128), 1)
+                    cv2.putText(frame_small, f"[LOC] {label_vi} ({box_w}x{box_h}) < {min_area}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+                continue
+            
             detected_classes_vi.add(label_vi.lower())
             
             # Vẽ bounding box
             cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(frame_small, f"{label_vi} ({box_w}x{box_h})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-    # Nhận diện tiền
+    # Xử lý kết quả model tiền
     if money_model_yolo is not None:
-        m_results = money_model_yolo(frame_small, conf=0.6, verbose=False)
         for r in m_results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -157,21 +188,24 @@ while True:
                 box_w = x2 - x1
                 box_h = y2 - y1
                 box_area = box_w * box_h
-                if box_area < MIN_AREA_MONEY:
-                    continue
-
                 cls = int(box.cls[0])
                 m_label = money_names_yolo[cls]
                 label_vi_money = f"Tiền {m_label} VNĐ"
+
+                if box_area < MIN_AREA_MONEY:
+                    if DEBUG_MODE:
+                        cv2.rectangle(frame_small, (x1, y1), (x2, y2), (128, 128, 128), 1)
+                        cv2.putText(frame_small, f"[LOC] {label_vi_money} ({box_w}x{box_h}) < {MIN_AREA_MONEY}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+                    continue
+
                 detected_classes_vi.add(label_vi_money.lower())
                 
                 # Vẽ bounding box
                 cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 255, 255), 2)
                 cv2.putText(frame_small, f"{label_vi_money} ({box_w}x{box_h})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-    # Nhận diện vật cản (nắp cống, bậc vỉa hè)
+    # Xử lý kết quả model vật cản (nắp cống, bậc vỉa hè)
     if best_model_yolo is not None:
-        b_results = best_model_yolo(frame_small, conf=0.4, verbose=False)
         for r in b_results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -180,12 +214,15 @@ while True:
                 box_w = x2 - x1
                 box_h = y2 - y1
                 box_area = box_w * box_h
+                cls = int(box.cls[0])
+                label_vi_best = BEST_LABELS_VI.get(cls, f"Vật cản {cls}")
+
                 if box_area < MIN_AREA_OBSTACLE:
+                    if DEBUG_MODE:
+                        cv2.rectangle(frame_small, (x1, y1), (x2, y2), (128, 128, 128), 1)
+                        cv2.putText(frame_small, f"[LOC] {label_vi_best} ({box_w}x{box_h}) < {MIN_AREA_OBSTACLE}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
                     continue
 
-                cls = int(box.cls[0])
-                
-                label_vi_best = BEST_LABELS_VI.get(cls, f"Vật cản {cls}")
                 detected_classes_vi.add(label_vi_best)
                 
                 # Vẽ bounding box (màu đỏ)
@@ -196,8 +233,7 @@ while True:
     if current_time - last_speak_time > interval:
         if detected_classes_vi:
             sentence = "Cảnh báo! phía trước có " + ", ".join(list(detected_classes_vi))
-            print("TTS:", sentence)
-            speak(sentence)
+            print("LOG CẢNH BÁO (Sẽ gửi qua Web/Pi để phát loa):", sentence)
             last_speak_time = current_time
 
     cv2.imshow("Detection + TTS", frame_small)

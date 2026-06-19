@@ -5,40 +5,33 @@ Port: 5050
 """
 
 import base64
-import io
-import json
 import time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import cv2
 import numpy as np
 from ultralytics import YOLO
-from keras.models import load_model
-import pickle
-
-from transformers import VitsModel, AutoTokenizer
-import sounddevice as sd
-import threading
-import torch
-import soundfile as sf
-import base64
-import io
 
 app = Flask(__name__)
 CORS(app)  # Cho phép cross-origin từ Node.js Express
 
+import onnxruntime as ort
+print("[SafeEye] ONNX Providers:", ort.get_available_providers())
+
 # Load model YOLOv8
-print("[SafeEye] Đang tải model YOLOv8...")
-model = YOLO("yolov8n.pt")
+print("[SafeEye] Đang tải model YOLOv8 (ONNX)...")
+model = YOLO("yolov8n.onnx", task="detect")
 names = model.names
 
-print("[SafeEye] Đang tải model TTS tiếng Việt...")
-tts_model = VitsModel.from_pretrained("facebook/mms-tts-vie")
-tokenizer = AutoTokenizer.from_pretrained("facebook/mms-tts-vie")
+# === RESIZE cho inference (giữ đúng tỷ lệ 16:9 của camera gốc 4608x2592) ===
+INFERENCE_WIDTH = 640
+INFERENCE_HEIGHT = 360
+
+# Đã loại bỏ model TTS để tối ưu FPS. Giọng nói sẽ được phát thông qua Web Browser hoặc Raspberry Pi.
 
 print("[SafeEye] Đang tải model YOLO nhận diện tiền VN...")
 try:
-    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL/SafeEye/src/model/money_yolov8.pt")
+    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL/SafeEye/src/model/money_yolov8.onnx", task="detect")
     money_names_yolo = money_model_yolo.names
     print("[SafeEye] Tải model tiền YOLO thành công, classes:", money_names_yolo)
 except Exception as e:
@@ -46,8 +39,8 @@ except Exception as e:
     money_model_yolo = None
 
 try:
-    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.pt")
-    print("[SafeEye] Tải model vật cản (best.pt) thành công")
+    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.onnx", task="detect")
+    print("[SafeEye] Tải model vật cản (ONNX) thành công")
 except Exception as e:
     print("[SafeEye] Lỗi tải model vật cản (best.pt):", e)
     best_model_yolo = None
@@ -196,6 +189,10 @@ def decode_base64_image(data_url: str) -> np.ndarray:
     img_bytes = base64.b64decode(data_url)
     buf = np.frombuffer(img_bytes, dtype=np.uint8)
     frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    
+    if frame is not None:
+        frame = cv2.resize(frame, (INFERENCE_WIDTH, INFERENCE_HEIGHT), interpolation=cv2.INTER_LINEAR)
+        
     return frame
 
 
@@ -210,16 +207,7 @@ def calculate_fps():
         fps_counter["last_time"] = current_time
     return fps_counter["fps"]
 
-def speak(text):
-    def run():
-        inputs = tokenizer(text, return_tensors="pt")
-        with torch.no_grad():
-            output = tts_model(**inputs).waveform
-        audio = output.squeeze().cpu().numpy()
-        sd.stop()
-        sd.play(audio, samplerate=tts_model.config.sampling_rate)
 
-    threading.Thread(target=run, daemon=True).start()
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -244,29 +232,88 @@ def detect():
 
         h, w = frame.shape[:2]
 
-        # Chạy YOLO inference
+        # Chạy YOLO inference TUẦN TỰ (GPU xử lý tuần tự, đa luồng không nhanh hơn mà còn tốn overhead)
         conf_threshold = float(data.get("conf", 0.5))  # ngưỡng mặc định 0.5 để giảm false positive
-        results = model(frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False)
+        
+        results = model(frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False, imgsz=320)
+        m_results = money_model_yolo(frame, conf=0.6, verbose=False, imgsz=320) if money_model_yolo else []
+        b_results = best_model_yolo(frame, conf=0.4, verbose=False, imgsz=320) if best_model_yolo else []
 
         detections = []
+        filtered_detections = []  # Dùng khi DEBUG_MODE = True
         class_counts = {}
 
-        MIN_AREA_GENERAL = 4000
+        # === CHẾ ĐỘ DEBUG: Đặt False để tăng FPS (bỏ xây dựng danh sách filtered) ===
+        DEBUG_MODE = False
+
+        # Ngưỡng diện tích riêng cho từng vật thể (pixel²)
+        MIN_AREA_PER_CLASS = {
+            0:  3000,   # person        - người
+            1:  2500,   # bicycle       - xe đạp
+            2:  5000,   # car           - ô tô (to, chỉ báo khi gần)
+            3:  3000,   # motorcycle    - xe máy
+            4:  4000,   # airplane      - máy bay
+            5:  6000,   # bus           - xe buýt (rất to, chỉ báo khi gần)
+            6:  6000,   # train         - tàu hỏa
+            7:  5000,   # truck         - xe tải
+            8:  3000,   # boat          - thuyền
+            9:  800,    # traffic light - đèn giao thông (nhỏ trên cao)
+            10: 1500,   # fire hydrant  - họng cứu hỏa (nhỏ dưới đất)
+            11: 1000,   # stop sign     - biển dừng (nhỏ trên cao)
+            12: 1000,   # parking meter - đồng hồ đỗ xe
+            13: 3000,   # bench         - ghế băng
+            15: 1500,   # cat           - mèo (nhỏ)
+            16: 2000,   # dog           - chó
+            19: 4000,   # cow           - bò
+            24: 1500,   # backpack      - ba lô
+            25: 1500,   # umbrella      - ô dù
+            26: 1000,   # handbag       - túi xách (nhỏ)
+            28: 2000,   # suitcase      - vali
+            39: 800,    # bottle        - chai (nhỏ)
+            41: 600,    # cup           - ly/cốc (rất nhỏ)
+            56: 3000,   # chair         - ghế
+            60: 4000,   # dining table  - bàn ăn (to)
+            67: 500,    # cell phone    - điện thoại (rất nhỏ)
+        }
         MIN_AREA_MONEY = 1000
         MIN_AREA_OBSTACLE = 3000
+
+        # Xử lý kết quả model chung
 
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 
+                # Lọc theo diện tích riêng từng class
+                cls = int(box.cls[0])
                 box_w = x2 - x1
                 box_h = y2 - y1
                 box_area = box_w * box_h
-                if box_area < MIN_AREA_GENERAL:
-                    continue
-
-                cls = int(box.cls[0])
+                min_area = MIN_AREA_PER_CLASS.get(cls, 4000)
                 conf = float(box.conf[0])
+                label_vi = CLASS_LABELS_VI.get(cls, names[cls])
+
+                if box_area < min_area:
+                    # DEBUG: Trả về vật bị lọc với khung xám
+                    if DEBUG_MODE:
+                        filtered_detections.append({
+                            "class_id": cls,
+                            "label": f"[LỌC] {label_vi} ({box_w}x{box_h}) < {min_area}",
+                            "label_tts": "",
+                            "label_en": names[cls],
+                            "confidence": round(conf, 3),
+                            "color": "#6b7280",
+                            "filtered": True,
+                            "bbox": {
+                                "x1": x1, "y1": y1,
+                                "x2": x2, "y2": y2,
+                                "x1n": round(x1 / w, 4),
+                                "y1n": round(y1 / h, 4),
+                                "x2n": round(x2 / w, 4),
+                                "y2n": round(y2 / h, 4),
+                            }
+                        })
+                    continue
 
                 label_vi = CLASS_LABELS_VI.get(cls, names[cls])
                 color = CLASS_COLORS.get(cls, "#ffffff")
@@ -291,11 +338,9 @@ def detect():
 
                 class_counts[label_vi] = class_counts.get(label_vi, 0) + 1
 
-        # Nhận diện tiền VN bằng YOLO
+        # Xử lý kết quả model tiền
         if money_model_yolo is not None:
             try:
-                # Chạy YOLO cho tiền (conf 0.6 để nhạy hơn)
-                m_results = money_model_yolo(frame, conf=0.6, verbose=False)
                 for r in m_results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -303,7 +348,28 @@ def detect():
                         box_w = x2 - x1
                         box_h = y2 - y1
                         box_area = box_w * box_h
+                        cls = int(box.cls[0])
+                        m_label_raw = money_names_yolo[cls]
+
                         if box_area < MIN_AREA_MONEY:
+                            if DEBUG_MODE:
+                                filtered_detections.append({
+                                    "class_id": 999 + cls,
+                                    "label": f"[LỌC] Tiền {m_label_raw} VNĐ ({box_w}x{box_h}) < {MIN_AREA_MONEY}",
+                                    "label_tts": "",
+                                    "label_en": f"Money {m_label_raw}",
+                                    "confidence": round(float(box.conf[0]), 3),
+                                    "color": "#6b7280",
+                                    "filtered": True,
+                                    "bbox": {
+                                        "x1": x1, "y1": y1,
+                                        "x2": x2, "y2": y2,
+                                        "x1n": round(x1 / w, 4),
+                                        "y1n": round(y1 / h, 4),
+                                        "x2n": round(x2 / w, 4),
+                                        "y2n": round(y2 / h, 4),
+                                    }
+                                })
                             continue
 
                         cls = int(box.cls[0])
@@ -345,10 +411,9 @@ def detect():
             except Exception as e:
                 print("[SafeEye] Lỗi nhận diện tiền YOLO:", e)
 
-        # Nhận diện vật cản bằng YOLO
+        # Xử lý kết quả model vật cản bằng YOLO
         if best_model_yolo is not None:
             try:
-                b_results = best_model_yolo(frame, conf=0.4, verbose=False)
                 for r in b_results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -356,13 +421,31 @@ def detect():
                         box_w = x2 - x1
                         box_h = y2 - y1
                         box_area = box_w * box_h
-                        if box_area < MIN_AREA_OBSTACLE:
-                            continue
-
                         cls = int(box.cls[0])
                         b_conf = float(box.conf[0])
-                        
                         label_vi_best = BEST_LABELS_VI.get(cls, f"Vật cản {cls}")
+
+                        if box_area < MIN_AREA_OBSTACLE:
+                            if DEBUG_MODE:
+                                filtered_detections.append({
+                                    "class_id": 2000 + cls,
+                                    "label": f"[LỌC] {label_vi_best} ({box_w}x{box_h}) < {MIN_AREA_OBSTACLE}",
+                                    "label_tts": "",
+                                    "label_en": f"Obstacle {cls}",
+                                    "confidence": round(b_conf, 3),
+                                    "color": "#6b7280",
+                                    "filtered": True,
+                                    "bbox": {
+                                        "x1": x1, "y1": y1,
+                                        "x2": x2, "y2": y2,
+                                        "x1n": round(x1 / w, 4),
+                                        "y1n": round(y1 / h, 4),
+                                        "x2n": round(x2 / w, 4),
+                                        "y2n": round(y2 / h, 4),
+                                    }
+                                })
+                            continue
+
                         b_color = BEST_COLORS.get(cls, "#ef4444")
                         
                         detections.append({
@@ -404,27 +487,13 @@ def detect():
             else:
                 speech_text = "Phía trước an toàn"
 
-            try:
-                # Tạo audio từ text
-                inputs = tokenizer(speech_text, return_tensors="pt")
-                with torch.no_grad():
-                    output = tts_model(**inputs).waveform
+            # Đã loại bỏ TTS inference (tts_model) ở đây
+            # Client (Web/Pi) sẽ nhận `speech_text` và tự động đọc bằng TTS tích hợp (VD: window.speechSynthesis)
+            
+            last_spoken_classes = tuple(unique_classes)
+            last_speak_time = current_time
 
-                audio = output.squeeze().cpu().numpy()
-
-                buf = io.BytesIO()
-                sf.write(buf, audio, tts_model.config.sampling_rate, format="WAV")
-                audio_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-                
-                last_spoken_classes = tuple(unique_classes)
-                last_speak_time = current_time
-            except Exception as e:
-                print(f"[SafeEye] Lỗi TTS: {e}")
-        else:
-            # Nếu chưa quá 5 giây và không đổi class, ta không sinh audio để tránh lag
-            pass
-
-        return jsonify({
+        response_data = {
             "detections": detections,
             "class_counts": class_counts,
             "total": len(detections),
@@ -432,13 +501,30 @@ def detect():
             "frame_size": {"width": w, "height": h},
             "speech": speech_text,
             "audio": audio_base64
-        })
+        }
+
+        # DEBUG: Thêm danh sách vật bị lọc vào response
+        if DEBUG_MODE and filtered_detections:
+            response_data["filtered"] = filtered_detections
+            response_data["filtered_count"] = len(filtered_detections)
+
+        return jsonify(response_data)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
+    # === WARM-UP: Chạy inference giả để GPU khởi tạo sẵn, tránh frame đầu bị chậm ===
+    print("[SafeEye] Đang warm-up GPU...")
+    dummy = np.zeros((INFERENCE_HEIGHT, INFERENCE_WIDTH, 3), dtype=np.uint8)
+    model(dummy, verbose=False, imgsz=320)
+    if money_model_yolo:
+        money_model_yolo(dummy, verbose=False, imgsz=320)
+    if best_model_yolo:
+        best_model_yolo(dummy, verbose=False, imgsz=320)
+    print("[SafeEye] Warm-up hoàn tất!")
+    
     print("[SafeEye] API server đang khởi động tại http://localhost:5050")
     print("[SafeEye] Endpoint: POST /detect  |  GET /health")
     app.run(host="0.0.0.0", port=5050, debug=False)
