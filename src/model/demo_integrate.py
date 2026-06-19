@@ -1,3 +1,8 @@
+# === BẮT BUỘC: Đặt CUDA_VISIBLE_DEVICES TRƯỚC KHI IMPORT BẤT KỲ THƯ VIỆN CUDA NÀO ===
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+
 import cv2
 import time
 import torch
@@ -6,12 +11,22 @@ from ultralytics import YOLO
 import threading
 import concurrent.futures
 
+# Bắt buộc chạy trên GPU 1 (NVIDIA GeForce GTX 1650)
+if not torch.cuda.is_available():
+    raise RuntimeError("[SafeEye] LỖI: Không tìm thấy GPU NVIDIA CUDA. Bắt buộc phải chạy trên GPU 1.")
+CUDA_DEVICE = "cuda:0"  # Thực tế là GPU 1 vật lý nhờ CUDA_VISIBLE_DEVICES=1
+print(f"[SafeEye] CUDA_VISIBLE_DEVICES = {os.environ.get('CUDA_VISIBLE_DEVICES')}")
+print(f"[SafeEye] GPU đang dùng: {torch.cuda.get_device_name(0)}")
+print(f"[SafeEye] Số GPU nhìn thấy: {torch.cuda.device_count()}")
+
 # 1. Load models
-model_yolo = YOLO("yolov8n.onnx", task="detect")
+model_yolo = YOLO("yolov8n.pt", task="detect")
+model_yolo.to(CUDA_DEVICE)
 names = model_yolo.names
 
 try:
-    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL/SafeEye/src/model/money_yolov8.onnx", task="detect")
+    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/money_yolov8.pt", task="detect")
+    money_model_yolo.to(CUDA_DEVICE)
     money_names_yolo = money_model_yolo.names
     print("[SafeEye] Tải model tiền YOLO thành công, classes:", money_names_yolo)
 except Exception as e:
@@ -19,8 +34,9 @@ except Exception as e:
     money_model_yolo = None
 
 try:
-    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.onnx", task="detect")
-    print("[SafeEye] Tải model vật cản (ONNX) thành công")
+    best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.pt", task="detect")
+    best_model_yolo.to(CUDA_DEVICE)
+    print("[SafeEye] Tải model vật cản (.pt) thành công")
 except Exception as e:
     print("[SafeEye] Lỗi tải model vật cản (best.pt):", e)
     best_model_yolo = None
@@ -92,7 +108,7 @@ CLASS_LABELS_VI = {
 # Đã loại bỏ model TTS để tối ưu FPS. Giọng nói sẽ được phát thông qua Web Browser hoặc Raspberry Pi.
 
 # cap = cv2.VideoCapture(0)
-cap = cv2.VideoCapture("http://192.168.1.235:5000/video")
+cap = cv2.VideoCapture("http://192.168.1.211:8000/stream.mjpg")
 
 last_speak_time = 0
 interval = 5
@@ -100,9 +116,14 @@ interval = 5
 # === CHẾ ĐỘ DEBUG: Đặt True để hiển thị cả vật bị lọc (khung xám) ===
 DEBUG_MODE = True
 
+if not cap.isOpened():
+    print(f"[SafeEye] LỖI: Không thể kết nối tới IP Camera (http://192.168.1.211:8000/). Hãy kiểm tra lại địa chỉ IP, cổng, hoặc đường dẫn luồng video (ví dụ: /video, /stream.mjpg).")
+    exit(1)
+
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("[SafeEye] Bị mất kết nối với Camera hoặc luồng video kết thúc.")
         break
 
     frame_small = cv2.resize(frame, (1080, 720), interpolation=cv2.INTER_AREA)
@@ -141,9 +162,9 @@ while True:
 
     # Nhận diện ĐA LUỒNG (Song song) 3 model cùng lúc
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_general = executor.submit(model_yolo, frame_small, classes=target_classes, conf=0.5, verbose=False, imgsz=320)
-        future_money = executor.submit(money_model_yolo, frame_small, conf=0.6, verbose=False, imgsz=320) if money_model_yolo else None
-        future_best = executor.submit(best_model_yolo, frame_small, conf=0.4, verbose=False, imgsz=320) if best_model_yolo else None
+        future_general = executor.submit(model_yolo, frame_small, classes=target_classes, conf=0.5, verbose=False, imgsz=320, device=CUDA_DEVICE)
+        future_money = executor.submit(money_model_yolo, frame_small, conf=0.6, verbose=False, imgsz=320, device=CUDA_DEVICE) if money_model_yolo else None
+        future_best = executor.submit(best_model_yolo, frame_small, conf=0.4, verbose=False, imgsz=320, device=CUDA_DEVICE) if best_model_yolo else None
         
         results = future_general.result()
         m_results = future_money.result() if future_money else []

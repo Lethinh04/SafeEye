@@ -4,6 +4,13 @@ Chạy: python src/model/demo_api.py
 Port: 5050
 """
 
+# === BẮT BUỘC: Đặt CUDA_VISIBLE_DEVICES TRƯỚC KHI IMPORT BẤT KỲ THƯ VIỆN CUDA NÀO ===
+# GPU 1 (NVIDIA GeForce GTX 1650) sẽ trở thành device duy nhất mà process này nhìn thấy.
+# Điều này ép cả PyTorch, ONNX Runtime, và mọi thư viện CUDA chỉ dùng GPU 1.
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # Đảm bảo thứ tự GPU khớp với nvidia-smi
+
 import base64
 import time
 from flask import Flask, request, jsonify
@@ -11,15 +18,29 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 from ultralytics import YOLO
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 CORS(app)  # Cho phép cross-origin từ Node.js Express
 
-import onnxruntime as ort
-print("[SafeEye] ONNX Providers:", ort.get_available_providers())
+import torch
 
-# Load model YOLOv8
-print("[SafeEye] Đang tải model YOLOv8 (ONNX)...")
+# === CẤU HÌNH GPU ===
+# Sau khi đặt CUDA_VISIBLE_DEVICES=1, GPU 1 (NVIDIA) trở thành cuda:0 trong PyTorch
+if not torch.cuda.is_available():
+    raise RuntimeError("[SafeEye] LỖI: Không tìm thấy GPU NVIDIA CUDA. Bắt buộc phải chạy trên GPU 1 (NVIDIA).")
+
+CUDA_DEVICE = "cuda:0"  # Thực tế là GPU 1 vật lý nhờ CUDA_VISIBLE_DEVICES=1
+print(f"[SafeEye] === GPU CONFIGURATION ===")
+print(f"[SafeEye] CUDA_VISIBLE_DEVICES = {os.environ.get('CUDA_VISIBLE_DEVICES')}")
+print(f"[SafeEye] PyTorch device: {CUDA_DEVICE}")
+print(f"[SafeEye] GPU Name: {torch.cuda.get_device_name(0)}")
+print(f"[SafeEye] VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+print(f"[SafeEye] Số GPU nhìn thấy: {torch.cuda.device_count()}")
+print(f"[SafeEye] ===========================")
+
+# Load model YOLOv8 trên GPU (dùng .onnx với onnxruntime-gpu trên CUDA)
+print(f"[SafeEye] Đang tải model YOLOv8 (.onnx) trên GPU 1 (NVIDIA)...")
 model = YOLO("yolov8n.onnx", task="detect")
 names = model.names
 
@@ -29,20 +50,20 @@ INFERENCE_HEIGHT = 360
 
 # Đã loại bỏ model TTS để tối ưu FPS. Giọng nói sẽ được phát thông qua Web Browser hoặc Raspberry Pi.
 
-print("[SafeEye] Đang tải model YOLO nhận diện tiền VN...")
+print("[SafeEye] Đang tải model YOLO nhận diện tiền VN (.onnx)...")
 try:
-    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL/SafeEye/src/model/money_yolov8.onnx", task="detect")
+    money_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/money_yolov8.onnx", task="detect")
     money_names_yolo = money_model_yolo.names
-    print("[SafeEye] Tải model tiền YOLO thành công, classes:", money_names_yolo)
+    print("[SafeEye] Tải model tiền YOLO (.onnx) thành công, classes:", money_names_yolo)
 except Exception as e:
     print("[SafeEye] Lỗi tải model tiền YOLO:", e)
     money_model_yolo = None
 
 try:
     best_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/best.onnx", task="detect")
-    print("[SafeEye] Tải model vật cản (ONNX) thành công")
+    print("[SafeEye] Tải model vật cản (.onnx) thành công")
 except Exception as e:
-    print("[SafeEye] Lỗi tải model vật cản (best.pt):", e)
+    print("[SafeEye] Lỗi tải model vật cản (best.onnx):", e)
     best_model_yolo = None
 
 BEST_LABELS_VI = {
@@ -207,6 +228,57 @@ def calculate_fps():
         fps_counter["last_time"] = current_time
     return fps_counter["fps"]
 
+def hex_to_bgr(hex_color: str) -> tuple:
+    """Convert hex color string (#RRGGBB) to BGR tuple for OpenCV."""
+    hex_color = hex_color.lstrip('#')
+    try:
+        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return (b, g, r) # OpenCV uses BGR
+    except:
+        return (255, 255, 255)
+
+def hex_to_rgb(hex_color: str) -> tuple:
+    """Convert hex color string to RGB tuple for PIL."""
+    hex_color = hex_color.lstrip('#')
+    try:
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    except:
+        return (255, 255, 255)
+
+# === PIL cho tiếng Việt Unicode (cv2.putText không hỗ trợ Unicode) ===
+from PIL import Image, ImageDraw, ImageFont
+
+# Tải font hỗ trợ tiếng Việt (dùng Arial có sẵn trên Windows)
+try:
+    _pil_font = ImageFont.truetype("arial.ttf", 16)
+    _pil_font_small = ImageFont.truetype("arial.ttf", 14)
+    print("[SafeEye] Đã tải font Arial cho tiếng Việt")
+except:
+    _pil_font = ImageFont.load_default()
+    _pil_font_small = _pil_font
+    print("[SafeEye] Không tìm thấy Arial, dùng font mặc định")
+
+def draw_text_vi(frame, text, position, color_hex, font=None):
+    """Vẽ chữ tiếng Việt lên frame OpenCV bằng PIL."""
+    if font is None:
+        font = _pil_font
+    color_rgb = hex_to_rgb(color_hex)
+    
+    # Convert OpenCV BGR -> RGB -> PIL Image
+    img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img_pil)
+    
+    # Vẽ viền đen (outline) để dễ đọc trên mọi nền
+    x, y = position
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx != 0 or dy != 0:
+                draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
+    draw.text((x, y), text, font=font, fill=color_rgb)
+    
+    # Convert PIL -> OpenCV BGR
+    frame[:] = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
 
 
 @app.route("/health", methods=["GET"])
@@ -232,16 +304,22 @@ def detect():
 
         h, w = frame.shape[:2]
 
-        # Chạy YOLO inference TUẦN TỰ (GPU xử lý tuần tự, đa luồng không nhanh hơn mà còn tốn overhead)
+        # Chạy YOLO inference SONG SONG (3 model cùng lúc, tận dụng overlap preprocessing/postprocessing)
         conf_threshold = float(data.get("conf", 0.5))  # ngưỡng mặc định 0.5 để giảm false positive
         
-        results = model(frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False, imgsz=320)
-        m_results = money_model_yolo(frame, conf=0.6, verbose=False, imgsz=320) if money_model_yolo else []
-        b_results = best_model_yolo(frame, conf=0.4, verbose=False, imgsz=320) if best_model_yolo else []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_general = executor.submit(model, frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False, imgsz=320, device=CUDA_DEVICE)
+            future_money = executor.submit(money_model_yolo, frame, conf=0.6, verbose=False, imgsz=320, device=CUDA_DEVICE) if money_model_yolo else None
+            future_best = executor.submit(best_model_yolo, frame, conf=0.4, verbose=False, imgsz=320, device=CUDA_DEVICE) if best_model_yolo else None
+            
+            results = future_general.result()
+            m_results = future_money.result() if future_money else []
+            b_results = future_best.result() if future_best else []
 
         detections = []
         filtered_detections = []  # Dùng khi DEBUG_MODE = True
         class_counts = {}
+        _text_draw_list = []  # Thu thập text để vẽ 1 lần bằng PIL (hỗ trợ tiếng Việt)
 
         # === CHẾ ĐỘ DEBUG: Đặt False để tăng FPS (bỏ xây dựng danh sách filtered) ===
         DEBUG_MODE = False
@@ -316,7 +394,8 @@ def detect():
                     continue
 
                 label_vi = CLASS_LABELS_VI.get(cls, names[cls])
-                color = CLASS_COLORS.get(cls, "#ffffff")
+                color_hex = CLASS_COLORS.get(cls, "#ffffff")
+                color_bgr = hex_to_bgr(color_hex)
 
                 detections.append({
                     "class_id": cls,
@@ -324,7 +403,7 @@ def detect():
                     "label_tts": label_vi,
                     "label_en": names[cls],
                     "confidence": round(conf, 3),
-                    "color": color,
+                    "color": color_hex,
                     "bbox": {
                         "x1": x1, "y1": y1,
                         "x2": x2, "y2": y2,
@@ -337,6 +416,11 @@ def detect():
                 })
 
                 class_counts[label_vi] = class_counts.get(label_vi, 0) + 1
+                
+                # DRAW BOX ON FRAME (rectangle = OpenCV nhanh, text = thu thập để vẽ 1 lần bằng PIL)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color_bgr, 2)
+                label_text = f"{label_vi} {int(conf*100)}%"
+                _text_draw_list.append((label_text, (x1, max(y1 - 22, 2)), color_hex))
 
         # Xử lý kết quả model tiền
         if money_model_yolo is not None:
@@ -389,7 +473,8 @@ def detect():
                             "200000": "#ef4444", # Đỏ
                             "500000": "#14b8a6", # Xanh ngọc
                         }
-                        m_color = MONEY_COLORS.get(str(m_label), "#facc15")
+                        m_color_hex = MONEY_COLORS.get(str(m_label), "#facc15")
+                        m_color_bgr = hex_to_bgr(m_color_hex)
                         
                         detections.append({
                             "class_id": 999 + cls,
@@ -397,7 +482,7 @@ def detect():
                             "label_tts": label_vi_money,
                             "label_en": f"Money {m_label}",
                             "confidence": round(m_conf, 3),
-                            "color": m_color,
+                            "color": m_color_hex,
                             "bbox": {
                                 "x1": x1, "y1": y1,
                                 "x2": x2, "y2": y2,
@@ -408,6 +493,10 @@ def detect():
                             }
                         })
                         class_counts[label_vi_money] = class_counts.get(label_vi_money, 0) + 1
+                        
+                        # DRAW BOX ON FRAME
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), m_color_bgr, 2)
+                        _text_draw_list.append((f"{label_vi_money} {int(m_conf*100)}%", (x1, max(y1 - 22, 2)), m_color_hex))
             except Exception as e:
                 print("[SafeEye] Lỗi nhận diện tiền YOLO:", e)
 
@@ -446,7 +535,8 @@ def detect():
                                 })
                             continue
 
-                        b_color = BEST_COLORS.get(cls, "#ef4444")
+                        b_color_hex = BEST_COLORS.get(cls, "#ef4444")
+                        b_color_bgr = hex_to_bgr(b_color_hex)
                         
                         detections.append({
                             "class_id": 2000 + cls,
@@ -454,7 +544,7 @@ def detect():
                             "label_tts": label_vi_best,
                             "label_en": f"Obstacle {cls}",
                             "confidence": round(b_conf, 3),
-                            "color": b_color,
+                            "color": b_color_hex,
                             "bbox": {
                                 "x1": x1, "y1": y1,
                                 "x2": x2, "y2": y2,
@@ -465,8 +555,27 @@ def detect():
                             }
                         })
                         class_counts[label_vi_best] = class_counts.get(label_vi_best, 0) + 1
+                        
+                        # DRAW BOX ON FRAME
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), b_color_bgr, 2)
+                        _text_draw_list.append((f"{label_vi_best} {int(b_conf*100)}%", (x1, max(y1 - 22, 2)), b_color_hex))
             except Exception as e:
                 print("[SafeEye] Lỗi nhận diện vật cản YOLO:", e)
+
+        # === VẼ TẤT CẢ TEXT TIẾNG VIỆT 1 LẦN DUY NHẤT BẰNG PIL (tối ưu tốc độ) ===
+        if _text_draw_list:
+            img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(img_pil)
+            for text, pos, c_hex in _text_draw_list:
+                c_rgb = hex_to_rgb(c_hex)
+                x, y = pos
+                # Viền đen
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx != 0 or dy != 0:
+                            draw.text((x + dx, y + dy), text, font=_pil_font, fill=(0, 0, 0))
+                draw.text((x, y), text, font=_pil_font, fill=c_rgb)
+            frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
         fps = calculate_fps()
 
@@ -493,6 +602,10 @@ def detect():
             last_spoken_classes = tuple(unique_classes)
             last_speak_time = current_time
 
+        # Encode processed frame back to base64 (quality 60 = cân bằng tốc độ vs chất lượng)
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+        processed_img_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+
         response_data = {
             "detections": detections,
             "class_counts": class_counts,
@@ -500,7 +613,8 @@ def detect():
             "fps": fps,
             "frame_size": {"width": w, "height": h},
             "speech": speech_text,
-            "audio": audio_base64
+            "audio": audio_base64,
+            "processed_image": processed_img_b64
         }
 
         # DEBUG: Thêm danh sách vật bị lọc vào response
@@ -516,13 +630,13 @@ def detect():
 
 if __name__ == "__main__":
     # === WARM-UP: Chạy inference giả để GPU khởi tạo sẵn, tránh frame đầu bị chậm ===
-    print("[SafeEye] Đang warm-up GPU...")
+    print(f"[SafeEye] Đang warm-up {CUDA_DEVICE}...")
     dummy = np.zeros((INFERENCE_HEIGHT, INFERENCE_WIDTH, 3), dtype=np.uint8)
-    model(dummy, verbose=False, imgsz=320)
+    model(dummy, verbose=False, imgsz=320, device=CUDA_DEVICE)
     if money_model_yolo:
-        money_model_yolo(dummy, verbose=False, imgsz=320)
+        money_model_yolo(dummy, verbose=False, imgsz=320, device=CUDA_DEVICE)
     if best_model_yolo:
-        best_model_yolo(dummy, verbose=False, imgsz=320)
+        best_model_yolo(dummy, verbose=False, imgsz=320, device=CUDA_DEVICE)
     print("[SafeEye] Warm-up hoàn tất!")
     
     print("[SafeEye] API server đang khởi động tại http://localhost:5050")

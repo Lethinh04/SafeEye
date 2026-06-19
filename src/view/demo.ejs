@@ -312,12 +312,15 @@
                 <!-- Video Feed -->
                 <div id="video-wrapper"
                     class="relative w-full aspect-video rounded-2xl overflow-hidden shadow-2xl shadow-black/60 border border-slate-800">
-                    <!-- Webcam video -->
+                    <!-- Webcam video (raw stream) -->
                     <video id="webcam" autoplay playsinline muted class="w-full h-full object-cover"
                         style="transform: scaleX(-1);"></video>
 
-                    <!-- Canvas overlay for bounding boxes -->
-                    <canvas id="overlay-canvas" class="w-full h-full"></canvas>
+                    <!-- Processed image from server -->
+                    <img id="processed-video" class="absolute inset-0 w-full h-full object-cover z-10 hidden" />
+
+                    <!-- Canvas overlay for bounding boxes (now empty, kept for backward compatibility if needed) -->
+                    <canvas id="overlay-canvas" class="w-full h-full absolute inset-0 z-20 pointer-events-none"></canvas>
 
                     <!-- Hidden canvas for frame capture -->
                     <canvas id="capture-canvas" class="hidden"></canvas>
@@ -750,7 +753,12 @@
                 }
                 const latency = Math.round(performance.now() - t0);
 
-                renderDetections(data.detections);
+                if (data.processed_image) {
+                    const imgEl = document.getElementById("processed-video");
+                    imgEl.src = data.processed_image;
+                    imgEl.classList.remove("hidden");
+                }
+
                 updateStats(data, latency);
 
             } catch (e) {
@@ -762,32 +770,10 @@
 
         /* ─── Render bounding boxes on canvas ─── */
         function renderDetections(detections) {
-            ctx.clearRect(0, 0, overlay.width, overlay.height);
-            for (const d of detections) {
-                const { x1, y1, x2, y2 } = d.bbox;
-                const color = d.color;
-                // Box
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 2;
-                ctx.shadowColor = color;
-                ctx.shadowBlur = 8;
-                ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-                ctx.shadowBlur = 0;
-                // Fill
-                ctx.fillStyle = color + "22";
-                ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
-                // Label
-                if (showLabels) {
-                    const labelText = `${d.label} ${Math.round(d.confidence * 100)}%`;
-                    ctx.font = "bold 12px Space Grotesk, sans-serif";
-                    const tw = ctx.measureText(labelText).width;
-                    const lh = 20;
-                    ctx.fillStyle = color;
-                    ctx.fillRect(x1 - 1, y1 - lh - 2, tw + 12, lh + 2);
-                    ctx.fillStyle = "#ffffff";
-                    ctx.fillText(labelText, x1 + 5, y1 - 6);
-                }
-            }
+            // Function disabled since server now returns processed image
+            const cw = overlay.width;
+            const ch = overlay.height;
+            ctx.clearRect(0, 0, cw, ch);
         }
 
         /* ─── Update statistics ─── */

@@ -1,7 +1,15 @@
 import cv2
 from ultralytics import YOLO
 
+import torch
+
+# Bắt buộc chạy trên GPU 1 (NVIDIA GeForce GTX 1650)
+if not torch.cuda.is_available():
+    raise RuntimeError("[SafeEye] LỖI: Không tìm thấy GPU NVIDIA CUDA. Bắt buộc phải chạy trên GPU 1.")
+CUDA_DEVICE = "cuda:0"
+
 model = YOLO("yolov8n.pt")
+model.to(CUDA_DEVICE)
 
 target_classes = [0, 56, 60, 39, 67]
 
@@ -17,7 +25,7 @@ while True:
 
     frame = cv2.resize(frame, (1080, 720), interpolation=cv2.INTER_AREA)
 
-    results = model(frame, classes=target_classes, conf=0.3)
+    results = model(frame, classes=target_classes, conf=0.3, device=CUDA_DEVICE)
 
     for r in results:
         for box in r.boxes:
