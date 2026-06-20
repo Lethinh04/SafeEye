@@ -19,6 +19,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 from concurrent.futures import ThreadPoolExecutor
+import requests
+import threading
 
 app = Flask(__name__)
 CORS(app)  # Cho phép cross-origin từ Node.js Express
@@ -201,6 +203,14 @@ VI_MAP = {
 last_speak_time = 0
 SPEAK_INTERVAL = 5  # giây
 last_spoken_classes = set()
+last_firebase_push_time = 0
+
+def push_to_firebase(data):
+    url = "https://sos-app-8ba8b-default-rtdb.asia-southeast1.firebasedatabase.app/detections.json"
+    try:
+        requests.put(url, json=data)
+    except Exception as e:
+        print(f"[SafeEye] Lỗi đẩy dữ liệu lên Firebase: {e}")
 
 def decode_base64_image(data_url: str) -> np.ndarray:
     """Giải mã base64 image từ canvas.toDataURL() sang numpy array."""
@@ -304,17 +314,12 @@ def detect():
 
         h, w = frame.shape[:2]
 
-        # Chạy YOLO inference SONG SONG (3 model cùng lúc, tận dụng overlap preprocessing/postprocessing)
-        conf_threshold = float(data.get("conf", 0.5))  # ngưỡng mặc định 0.5 để giảm false positive
+        # Chạy YOLO inference TUẦN TỰ để tránh lỗi hết RAM GPU (OOM) với ONNX Runtime
+        conf_threshold = float(data.get("conf", 0.5))
         
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_general = executor.submit(model, frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False, imgsz=320, device=CUDA_DEVICE)
-            future_money = executor.submit(money_model_yolo, frame, conf=0.6, verbose=False, imgsz=320, device=CUDA_DEVICE) if money_model_yolo else None
-            future_best = executor.submit(best_model_yolo, frame, conf=0.4, verbose=False, imgsz=320, device=CUDA_DEVICE) if best_model_yolo else None
-            
-            results = future_general.result()
-            m_results = future_money.result() if future_money else []
-            b_results = future_best.result() if future_best else []
+        results = model(frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False, imgsz=320, device=CUDA_DEVICE)
+        m_results = money_model_yolo(frame, conf=0.6, verbose=False, imgsz=320, device=CUDA_DEVICE) if money_model_yolo else []
+        b_results = best_model_yolo(frame, conf=0.4, verbose=False, imgsz=320, device=CUDA_DEVICE) if best_model_yolo else []
 
         detections = []
         filtered_detections = []  # Dùng khi DEBUG_MODE = True
@@ -584,8 +589,13 @@ def detect():
         unique_classes = list(set(detected_classes_vi))
         unique_classes.sort()
 
-        global last_speak_time, last_spoken_classes
+        global last_speak_time, last_spoken_classes, last_firebase_push_time
         current_time = time.time()
+        
+        # Gửi dữ liệu Firebase mỗi giây
+        if current_time - last_firebase_push_time > 1.0:
+            threading.Thread(target=push_to_firebase, args=(class_counts,), daemon=True).start()
+            last_firebase_push_time = current_time
         
         audio_base64 = ""
         speech_text = ""

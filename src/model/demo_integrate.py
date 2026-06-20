@@ -10,6 +10,8 @@ import numpy as np
 from ultralytics import YOLO
 import threading
 import concurrent.futures
+import requests
+import json
 
 # Bắt buộc chạy trên GPU 1 (NVIDIA GeForce GTX 1650)
 if not torch.cuda.is_available():
@@ -112,6 +114,15 @@ cap = cv2.VideoCapture("http://192.168.1.211:8000/stream.mjpg")
 
 last_speak_time = 0
 interval = 5
+last_firebase_push_time = 0
+
+def push_to_firebase(data):
+    url = "https://sos-app-8ba8b-default-rtdb.asia-southeast1.firebasedatabase.app/detections.json"
+    try:
+        # Nếu data rỗng, ta có thể đẩy rỗng hoặc thông báo an toàn
+        requests.put(url, json=data)
+    except Exception as e:
+        print(f"[SafeEye] Lỗi đẩy dữ liệu lên Firebase: {e}")
 
 # === CHẾ ĐỘ DEBUG: Đặt True để hiển thị cả vật bị lọc (khung xám) ===
 DEBUG_MODE = True
@@ -171,6 +182,7 @@ while True:
         b_results = future_best.result() if future_best else []
 
     detected_classes_vi = set()
+    class_counts = {}
 
     # Xử lý kết quả model chung
 
@@ -194,6 +206,7 @@ while True:
                 continue
             
             detected_classes_vi.add(label_vi.lower())
+            class_counts[label_vi.lower()] = class_counts.get(label_vi.lower(), 0) + 1
             
             # Vẽ bounding box
             cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -220,6 +233,7 @@ while True:
                     continue
 
                 detected_classes_vi.add(label_vi_money.lower())
+                class_counts[label_vi_money.lower()] = class_counts.get(label_vi_money.lower(), 0) + 1
                 
                 # Vẽ bounding box
                 cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 255, 255), 2)
@@ -245,12 +259,19 @@ while True:
                     continue
 
                 detected_classes_vi.add(label_vi_best)
+                class_counts[label_vi_best] = class_counts.get(label_vi_best, 0) + 1
                 
                 # Vẽ bounding box (màu đỏ)
                 cv2.rectangle(frame_small, (x1, y1), (x2, y2), (0, 0, 255), 2)
                 cv2.putText(frame_small, f"{label_vi_best} ({box_w}x{box_h})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
     current_time = time.time()
+    
+    # Gửi dữ liệu Firebase mỗi giây
+    if current_time - last_firebase_push_time > 1.0:
+        threading.Thread(target=push_to_firebase, args=(class_counts,), daemon=True).start()
+        last_firebase_push_time = current_time
+
     if current_time - last_speak_time > interval:
         if detected_classes_vi:
             sentence = "Cảnh báo! phía trước có " + ", ".join(list(detected_classes_vi))

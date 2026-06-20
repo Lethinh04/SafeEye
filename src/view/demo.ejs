@@ -225,10 +225,12 @@
         <header
             class="flex items-center justify-between border-b border-slate-800 px-5 py-3 bg-surface-dark sticky top-0 z-50 shadow-lg shadow-black/30">
             <div class="flex items-center gap-3">
-                <div class="flex items-center justify-center size-12 rounded-full bg-white shadow-md shadow-black/20 p-1.5 shrink-0 overflow-hidden">
+                <div
+                    class="flex items-center justify-center size-12 rounded-full bg-white shadow-md shadow-black/20 p-1.5 shrink-0 overflow-hidden">
                     <img src="/Logo.png" alt="Logo" class="w-full h-full object-contain" id="app-logo"
                         onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                    <span class="material-symbols-outlined text-[28px] text-primary" style="display: none;">shield_with_heart</span>
+                    <span class="material-symbols-outlined text-[28px] text-primary"
+                        style="display: none;">shield_with_heart</span>
                 </div>
                 <div>
                     <h1 class="text-lg font-bold leading-tight tracking-tight">SafeEye</h1>
@@ -245,20 +247,10 @@
                     </div>
                     <div class="w-px h-3.5 bg-slate-700"></div>
                     <div class="flex items-center gap-1.5">
-                        <span class="material-symbols-outlined text-[14px] text-slate-400">speed</span>
-                        <span id="fps-display" class="font-medium text-slate-300">-- FPS</span>
-                    </div>
-                    <div class="w-px h-3.5 bg-slate-700"></div>
-                    <div class="flex items-center gap-1.5">
                         <span class="material-symbols-outlined text-[14px] text-slate-400">hub</span>
                         <span id="api-status" class="font-medium text-yellow-400">API: Chờ</span>
                     </div>
                 </div>
-                <!-- Dark/Light toggle -->
-                <button id="theme-toggle" onclick="toggleTheme()"
-                    class="flex items-center justify-center size-9 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors">
-                    <span id="theme-icon" class="material-symbols-outlined text-[18px]">light_mode</span>
-                </button>
                 <!-- Settings -->
                 <button onclick="toggleSettings()"
                     class="flex items-center justify-center size-9 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors">
@@ -281,20 +273,10 @@
                     <select id="interval-select"
                         class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-xs text-slate-200 focus:outline-none focus:border-primary">
                         <option value="60">Siêu tốc (60ms - ~15 FPS)</option>
-                        <option value="100">Nhanh (100ms - 10 FPS)</option>
-                        <option value="200" selected>Cân bằng (200ms - 5 FPS)</option>
+                        <option value="100" selected>Nhanh (100ms - 10 FPS)</option>
+                        <option value="200">Cân bằng (200ms - 5 FPS)</option>
                         <option value="500">Tiết kiệm (500ms - 2 FPS)</option>
                     </select>
-                </div>
-                <div class="flex items-center gap-2">
-                    <label class="text-slate-400 font-medium">Hiện nhãn:</label>
-                    <button onclick="toggleLabels()" id="label-toggle"
-                        class="px-3 py-1 rounded-lg bg-primary/20 border border-primary/30 text-primary text-xs font-bold">BẬT</button>
-                </div>
-                <div class="flex items-center gap-2">
-                    <label class="text-slate-400 font-medium">Giọng nói:</label>
-                    <button onclick="toggleVoice()" id="voice-toggle"
-                        class="px-3 py-1 rounded-lg bg-slate-700 border border-slate-600 text-slate-400 text-xs font-bold">TẮT</button>
                 </div>
                 <div class="flex items-center gap-2 ml-auto">
                     <span class="material-symbols-outlined text-[14px] text-slate-500">info</span>
@@ -320,7 +302,8 @@
                     <img id="processed-video" class="absolute inset-0 w-full h-full object-cover z-10 hidden" />
 
                     <!-- Canvas overlay for bounding boxes (now empty, kept for backward compatibility if needed) -->
-                    <canvas id="overlay-canvas" class="w-full h-full absolute inset-0 z-20 pointer-events-none"></canvas>
+                    <canvas id="overlay-canvas"
+                        class="w-full h-full absolute inset-0 z-20 pointer-events-none"></canvas>
 
                     <!-- Hidden canvas for frame capture -->
                     <canvas id="capture-canvas" class="hidden"></canvas>
@@ -400,7 +383,7 @@
                 </div>
 
                 <!-- Stat Cards -->
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                     <div class="stat-card bg-surface-dark p-4 rounded-xl border border-slate-800">
                         <p class="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Vật thể</p>
                         <p id="stat-total" class="text-3xl font-bold text-primary">0</p>
@@ -415,12 +398,6 @@
                         <p class="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Độ trễ</p>
                         <p id="stat-latency" class="text-3xl font-bold text-slate-300">--</p>
                         <p class="text-[10px] text-slate-600 mt-1">ms / lần infer</p>
-                    </div>
-                    <div class="stat-card bg-surface-dark p-4 rounded-xl border border-slate-800">
-                        <p class="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Tổng phát hiện
-                        </p>
-                        <p id="stat-total-detected" class="text-3xl font-bold text-warning">0</p>
-                        <p class="text-[10px] text-slate-600 mt-1">Từ khi bắt đầu</p>
                     </div>
                 </div>
             </div>
@@ -487,7 +464,7 @@
             <div class="flex items-center gap-5">
                 <span class="flex items-center gap-1">
                     <span class="material-symbols-outlined text-[14px] text-success">fiber_manual_record</span>
-                    SafeEye v1.0.0-demo
+                    SafeEye v1.0.0
                 </span>
                 <span class="flex items-center gap-1">
                     <span class="material-symbols-outlined text-[14px]">smart_toy</span>
@@ -499,7 +476,7 @@
                 </span>
             </div>
             <div class="flex items-center gap-4">
-                <span class="text-slate-600">© 2025 SafeEye · EXE101</span>
+                <span class="text-slate-600">© 2026 SafeEye</span>
             </div>
         </footer>
     </div>
@@ -536,16 +513,27 @@
 
     <!-- ═══════════════ JAVASCRIPT ═══════════════ -->
     <script>
+        // Throttle settings for pushes (client -> server)
+        let lastFirebasePush = 0;
+        const FIREBASE_PUSH_INTERVAL = 2000; // ms
+
+        // Summarize detections into the 4 groups requested
+        function summarizeDetections(detections) {
+            const summary = { "Không có gì": 0, "Người": 0, "Bàn": 0, "1.000 VND": 0 };
+            if (!detections || detections.length === 0) {
+                summary["Không có gì"] = 1;
+                return summary;
+            }
+            detections.forEach(d => {
+                const raw = (d.label_tts || d.label || '').toString().toLowerCase();
+                if (/người|person|people|human/.test(raw)) { summary["Người"] += 1; return; }
+                if (/bàn|table|dining table|bàn ăn/.test(raw)) { summary["Bàn"] += 1; return; }
+                if (/1000|1\.000|1k|vnd|\bđ\b|dong|tiền|banknote|money/.test(raw)) { summary["1.000 VND"] += 1; return; }
+            });
+            return summary;
+        }
         /* ─── Config ─── */
         const API_BASE = "http://localhost:5050";
-        const CLASS_COLORS = {
-            0: "#3b82f6",   // Người
-            56: "#f59e0b",   // Ghế
-            60: "#8b5cf6",   // Bàn ăn
-            39: "#10b981",   // Chai/Bình
-            67: "#ef4444",   // Điện thoại
-            41: "#f97316",   // Ly/Cốc
-        };
 
         /* ─── State ─── */
         let stream = null;
@@ -571,51 +559,6 @@
             pingAPI();
             setInterval(pingAPI, 5000);
         });
-
-        // ─── Voice AI (Browser TTS) ───
-        let lastSpeech = "";
-        let lastSpeakTime = 0;
-        const SPEAK_INTERVAL = 5000; // ms
-
-        // window.speechSynthesis.onvoiceschanged = () => {};
-
-        function handleSpeech(text) {
-            if (!text) return;
-
-            const now = Date.now();
-
-            if (text === lastSpeech && now - lastSpeakTime < SPEAK_INTERVAL) return;
-
-            speak(text);
-
-            lastSpeech = text;
-            lastSpeakTime = now;
-        }
-
-        function speak(text) {
-            if (!("speechSynthesis" in window)) return;
-
-            // stop câu cũ nếu đang nói
-            speechSynthesis.cancel();
-
-            const utter = new SpeechSynthesisUtterance(text);
-
-            // chọn giọng tiếng Việt nếu có
-            const voices = speechSynthesis.getVoices();
-            const viVoice = voices.find(v => v.lang.includes("vi"));
-
-            if (viVoice) {
-                utter.voice = viVoice;
-                utter.lang = "vi-VN";
-            }
-
-            // tuning
-            utter.rate = 1.05;
-            utter.pitch = 1.0;
-            utter.volume = 1;
-
-            speechSynthesis.speak(utter);
-        }
 
         async function pingAPI() {
             try {
@@ -784,8 +727,6 @@
             document.getElementById("stat-total").textContent = String(newTotal).padStart(2, "0");
             document.getElementById("stat-fps").textContent = data.fps || "--";
             document.getElementById("stat-latency").textContent = latency;
-            document.getElementById("stat-total-detected").textContent = totalDetected;
-            document.getElementById("fps-display").textContent = (data.fps || "--") + " FPS";
 
             // Check for new detections to log
             const newCounts = data.class_counts || {};
@@ -798,6 +739,24 @@
 
             // Update detection list sidebar
             renderDetectionList(data.detections);
+
+            // Push summary + detections to Firebase (throttled)
+            try {
+                const summary = summarizeDetections(data.detections);
+                if (Date.now() - lastFirebasePush > FIREBASE_PUSH_INTERVAL) {
+                    lastFirebasePush = Date.now();
+                    const payload = { summary: summary };
+                    fetch('/api/detections', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    }).then(r => r.json()).then(j => {
+                        if (j.ok) console.log('Server stored detection id', j.id); else console.warn('Server response', j);
+                    }).catch(err => console.warn('Push to server error', err));
+                }
+            } catch (err) {
+                console.warn('Push to Firebase error', err);
+            }
 
             // Export data
             exportData.push({
@@ -972,41 +931,6 @@
 
         function updateConfLabel(val) {
             document.getElementById("conf-label").textContent = val + "%";
-        }
-
-        function toggleLabels() {
-            showLabels = !showLabels;
-            const btn = document.getElementById("label-toggle");
-            btn.textContent = showLabels ? "BẬT" : "TẮT";
-            btn.className = showLabels
-                ? "px-3 py-1 rounded-lg bg-primary/20 border border-primary/30 text-primary text-xs font-bold"
-                : "px-3 py-1 rounded-lg bg-slate-700 border border-slate-600 text-slate-400 text-xs font-bold";
-        }
-
-        function toggleVoice() {
-            enableVoice = !enableVoice;
-            const btn = document.getElementById("voice-toggle");
-            btn.textContent = enableVoice ? "BẬT" : "TẮT";
-            btn.className = enableVoice
-                ? "px-3 py-1 rounded-lg bg-primary/20 border border-primary/30 text-primary text-xs font-bold"
-                : "px-3 py-1 rounded-lg bg-slate-700 border border-slate-600 text-slate-400 text-xs font-bold";
-        }
-
-        /* ─── Theme toggle ─── */
-        function toggleTheme() {
-            const html = document.documentElement;
-            const icon = document.getElementById("theme-icon");
-            if (html.classList.contains("dark")) {
-                html.classList.remove("dark");
-                document.body.classList.replace("bg-bg-dark", "bg-bg-light");
-                document.body.classList.replace("text-slate-100", "text-slate-900");
-                icon.textContent = "dark_mode";
-            } else {
-                html.classList.add("dark");
-                document.body.classList.replace("bg-bg-light", "bg-bg-dark");
-                document.body.classList.replace("text-slate-900", "text-slate-100");
-                icon.textContent = "light_mode";
-            }
         }
 
         /* ─── Keyboard shortcuts ─── */
