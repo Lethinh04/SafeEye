@@ -294,9 +294,8 @@
                 <!-- Video Feed -->
                 <div id="video-wrapper"
                     class="relative w-full aspect-video rounded-2xl overflow-hidden shadow-2xl shadow-black/60 border border-slate-800">
-                    <!-- Webcam video (raw stream) -->
-                    <video id="webcam" autoplay playsinline muted class="w-full h-full object-cover"
-                        style="transform: scaleX(-1);"></video>
+                    <!-- Pi Camera (MJPEG Stream) -->
+                    <img id="webcam" class="w-full h-full object-cover" crossorigin="anonymous" />
 
                     <!-- Processed image from server -->
                     <img id="processed-video" class="absolute inset-0 w-full h-full object-cover z-10 hidden" />
@@ -578,37 +577,34 @@
         /* ─── Camera ─── */
         async function startCamera() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" }, audio: false });
-                video.srcObject = stream;
-                video.onloadedmetadata = () => {
-                    overlay.width = video.videoWidth;
-                    overlay.height = video.videoHeight;
+                video.src = "/proxy-stream";
+                video.onload = () => {
+                    overlay.width = video.naturalWidth || 1280;
+                    overlay.height = video.naturalHeight || 720;
                     // Tối ưu: Thu nhỏ kích thước ảnh gửi lên server để tăng tối đa FPS
                     capCanvas.width = 640;
                     capCanvas.height = 360;
+                    stream = true;
                 };
                 // Show UI
                 document.getElementById("camera-placeholder").classList.add("hidden");
                 document.getElementById("live-badge").classList.remove("hidden");
                 document.getElementById("cam-label").classList.remove("hidden");
+                document.getElementById("cam-label").textContent = "Pi Camera (MJPEG)";
                 document.getElementById("model-badge").classList.remove("hidden");
                 document.getElementById("camera-icon").textContent = "videocam";
                 document.getElementById("detect-btn").disabled = false;
                 setStatus("active", "Camera bật");
-                addLog("🟢", "Camera đã bật thành công", "primary");
+                addLog("🟢", "Đã kết nối Pi Camera", "primary");
             } catch (e) {
-                addLog("🔴", "Không thể truy cập camera: " + e.message, "danger");
-                alert("Không thể bật camera. Vui lòng cấp quyền truy cập.");
+                addLog("🔴", "Không thể kết nối Pi Camera: " + e.message, "danger");
             }
         }
 
         function stopCamera() {
-            if (stream) {
-                stream.getTracks().forEach(t => t.stop());
-                stream = null;
-            }
+            stream = null;
+            video.src = "";
             stopDetection();
-            video.srcObject = null;
             ctx.clearRect(0, 0, overlay.width, overlay.height);
             document.getElementById("camera-placeholder").classList.remove("hidden");
             document.getElementById("live-badge").classList.add("hidden");
@@ -665,7 +661,7 @@
         }
 
         async function runDetect() {
-            if (!stream || video.readyState < 2 || isProcessing) return;
+            if (!stream || !video.complete || video.naturalWidth === 0 || isProcessing) return;
 
             isProcessing = true;
 
@@ -869,8 +865,8 @@
 
             // Merge video + overlay canvas
             const snap = document.createElement("canvas");
-            snap.width = video.videoWidth || 1280;
-            snap.height = video.videoHeight || 720;
+            snap.width = video.naturalWidth || 1280;
+            snap.height = video.naturalHeight || 720;
             const sctx = snap.getContext("2d");
             sctx.save();
             sctx.translate(snap.width, 0);

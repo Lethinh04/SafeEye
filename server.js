@@ -44,6 +44,18 @@ app.set("views", path.join(__dirname, "src/view"));
 app.use(express.static(path.join(__dirname, "public")));
 
 // ─── Routes ───────────────────────────────
+const http = require('http');
+
+app.get("/proxy-stream", (req, res) => {
+    http.get("http://100.113.230.105:8000/stream.mjpg", (response) => {
+        res.writeHead(response.statusCode, response.headers);
+        response.pipe(res);
+    }).on('error', (e) => {
+        console.error("Proxy stream error:", e);
+        res.status(500).end();
+    });
+});
+
 app.get("/", (req, res) => res.redirect("/demo"));
 
 app.get("/demo", (req, res) => {
