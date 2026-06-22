@@ -68,6 +68,13 @@ except Exception as e:
     print("[SafeEye] Lỗi tải model vật cản (best.onnx):", e)
     best_model_yolo = None
 
+try:
+    curb_model_yolo = YOLO("d:/CE180136/SE/K7/EXE101/FINAL WEB/SafeEye/src/model/curb.onnx", task="detect")
+    print("[SafeEye] Tải model bậc vỉa (.onnx) thành công")
+except Exception as e:
+    print("[SafeEye] Lỗi tải model bậc vỉa (curb.onnx):", e)
+    curb_model_yolo = None
+
 BEST_LABELS_VI = {
     0: "nắp cống đóng",
     1: "nắp cống mở",
@@ -320,6 +327,7 @@ def detect():
         results = model(frame, classes=TARGET_CLASSES, conf=conf_threshold, verbose=False, imgsz=320, device=CUDA_DEVICE)
         m_results = money_model_yolo(frame, conf=0.6, verbose=False, imgsz=320, device=CUDA_DEVICE) if money_model_yolo else []
         b_results = best_model_yolo(frame, conf=0.4, verbose=False, imgsz=320, device=CUDA_DEVICE) if best_model_yolo else []
+        c_results = curb_model_yolo(frame, conf=0.4, verbose=False, imgsz=320, device=CUDA_DEVICE) if curb_model_yolo else []
 
         detections = []
         filtered_detections = []  # Dùng khi DEBUG_MODE = True
@@ -516,6 +524,11 @@ def detect():
                         box_h = y2 - y1
                         box_area = box_w * box_h
                         cls = int(box.cls[0])
+                        
+                        # Bỏ qua nhận diện bậc vỉa (class 2) từ best.onnx vì đã có model riêng
+                        if cls == 2:
+                            continue
+                            
                         b_conf = float(box.conf[0])
                         label_vi_best = BEST_LABELS_VI.get(cls, f"Vật cản {cls}")
 
@@ -567,6 +580,68 @@ def detect():
             except Exception as e:
                 print("[SafeEye] Lỗi nhận diện vật cản YOLO:", e)
 
+        # Xử lý kết quả model bậc vỉa bằng YOLO
+        if curb_model_yolo is not None:
+            try:
+                for r in c_results:
+                    for box in r.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        box_w = x2 - x1
+                        box_h = y2 - y1
+                        box_area = box_w * box_h
+                        cls = int(box.cls[0])
+                        c_conf = float(box.conf[0])
+                        label_vi_curb = "bậc vỉa hè"
+
+                        if box_area < MIN_AREA_OBSTACLE:
+                            if DEBUG_MODE:
+                                filtered_detections.append({
+                                    "class_id": 3000 + cls,
+                                    "label": f"[LỌC] {label_vi_curb} ({box_w}x{box_h}) < {MIN_AREA_OBSTACLE}",
+                                    "label_tts": "",
+                                    "label_en": f"Curb {cls}",
+                                    "confidence": round(c_conf, 3),
+                                    "color": "#6b7280",
+                                    "filtered": True,
+                                    "bbox": {
+                                        "x1": x1, "y1": y1,
+                                        "x2": x2, "y2": y2,
+                                        "x1n": round(x1 / w, 4),
+                                        "y1n": round(y1 / h, 4),
+                                        "x2n": round(x2 / w, 4),
+                                        "y2n": round(y2 / h, 4),
+                                    }
+                                })
+                            continue
+
+                        c_color_hex = "#f59e0b"
+                        c_color_bgr = hex_to_bgr(c_color_hex)
+                        
+                        detections.append({
+                            "class_id": 3000 + cls,
+                            "label": f"{label_vi_curb} ({box_w}x{box_h})",
+                            "label_tts": label_vi_curb,
+                            "label_en": f"Curb {cls}",
+                            "confidence": round(c_conf, 3),
+                            "color": c_color_hex,
+                            "bbox": {
+                                "x1": x1, "y1": y1,
+                                "x2": x2, "y2": y2,
+                                "x1n": round(x1 / w, 4),
+                                "y1n": round(y1 / h, 4),
+                                "x2n": round(x2 / w, 4),
+                                "y2n": round(y2 / h, 4),
+                            }
+                        })
+                        class_counts[label_vi_curb] = class_counts.get(label_vi_curb, 0) + 1
+                        
+                        # DRAW BOX ON FRAME
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), c_color_bgr, 2)
+                        _text_draw_list.append((f"{label_vi_curb} {int(c_conf*100)}%", (x1, max(y1 - 22, 2)), c_color_hex))
+            except Exception as e:
+                print("[SafeEye] Lỗi nhận diện bậc vỉa YOLO:", e)
+
         # === VẼ TẤT CẢ TEXT TIẾNG VIỆT 1 LẦN DUY NHẤT BẰNG PIL (tối ưu tốc độ) ===
         if _text_draw_list:
             img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -612,6 +687,11 @@ def detect():
             last_spoken_classes = tuple(unique_classes)
             last_speak_time = current_time
 
+        # Hiển thị trên màn hình server (như test_webcam.py)
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.imshow("SafeEye API Live View", frame)
+        cv2.waitKey(1)
+
         # Encode processed frame back to base64 (quality 60 = cân bằng tốc độ vs chất lượng)
         _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
         processed_img_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
@@ -647,8 +727,27 @@ if __name__ == "__main__":
         money_model_yolo(dummy, verbose=False, imgsz=320, device=CUDA_DEVICE)
     if best_model_yolo:
         best_model_yolo(dummy, verbose=False, imgsz=320, device=CUDA_DEVICE)
+    if curb_model_yolo:
+        curb_model_yolo(dummy, verbose=False, imgsz=320, device=CUDA_DEVICE)
     print("[SafeEye] Warm-up hoàn tất!")
     
-    print("[SafeEye] API server đang khởi động tại http://localhost:5050")
-    print("[SafeEye] Endpoint: POST /detect  |  GET /health")
-    app.run(host="0.0.0.0", port=5050, debug=False)
+    print("[SafeEye] Chạy ở chế độ Webcam trực tiếp (KHÔNG dùng Web Server)...")
+    print("[SafeEye] Nhấn Ctrl+C ở Terminal để thoát.")
+    
+    cap = cv2.VideoCapture(0)
+    client = app.test_client()
+    
+    with app.app_context():
+        while cap.isOpened():
+            ret, frame_cam = cap.read()
+            if not ret:
+                break
+                
+            # Resize nhẹ để tăng tốc gửi nhận nội bộ
+            frame_cam = cv2.resize(frame_cam, (640, 480))
+            _, buffer = cv2.imencode('.jpg', frame_cam, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
+            
+            # Gọi trực tiếp route detect() trên luồng chính (Main Thread).
+            # cv2.imshow bên trong detect() sẽ hoạt động hoàn hảo!
+            client.post("/detect", json={"image": b64, "conf": 0.5})
